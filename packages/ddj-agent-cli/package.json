@@ -1,0 +1,21 @@
+{
+  "name": "@ddj-ai/cli",
+  "version": "0.1.0",
+  "type": "module",
+  "bin": {
+    "ddj": "./dist/main.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@ddj-ai/agent-core": "file:../ddj-agent-core",
+    "@ddj-ai/core": "file:../ddj-ai",
+    "typebox": "^1.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.7.0"
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "name": "ddj-agent-monorepo",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Dream-Driven Journey — an AI coding agent CLI with multi-provider LLM support, streaming thinking, and extensible tools",
+  "keywords": ["ai", "agent", "cli", "coding-assistant", "llm", "deepseek", "claude"],
+  "license": "MIT",
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "check": "npm run check --workspaces --if-present",
+    "dev": "node packages/ddj-agent-cli/dist/main.js",
+    "ddj": "node packages/ddj-agent-cli/dist/main.js"
+  },
+  "workspaces": [
+    "packages/*"
+  ],
+  "devDependencies": {
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  }
+}
