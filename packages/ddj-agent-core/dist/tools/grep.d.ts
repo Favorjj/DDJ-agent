@@ -1,6 +1,6 @@
 /**
  * grep - Content search tool
- * Searches file contents with regex, returns matching lines with context.
+ * Uses ripgrep (rg) when available, falls back to Node.js search.
  */
 import type { AgentTool } from "../types.js";
 export declare const grepTool: AgentTool;

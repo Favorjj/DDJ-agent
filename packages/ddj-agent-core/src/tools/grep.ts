@@ -1,12 +1,115 @@
 /**
  * grep - Content search tool
- * Searches file contents with regex, returns matching lines with context.
+ * Uses ripgrep (rg) when available, falls back to Node.js search.
  */
 
 import { Type } from "typebox";
 import type { AgentTool } from "../types.js";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { exec } from "node:child_process";
+import { promisify } from "node:util";
+
+const execAsync = promisify(exec);
+
+/* ============================================================
+ * Ripgrep backend
+ * ============================================================ */
+
+interface RgMatch {
+  type: "match";
+  data: {
+    path: { text: string };
+    lines: { text: string };
+    line_number: number;
+  };
+}
+
+async function searchWithRg(
+  pattern: string,
+  searchPath: string,
+  include?: string
+): Promise<{ matches: string; count: number } | { error: string }> {
+  // Build rg glob filters
+  const globs: string[] = [];
+  if (include) {
+    globs.push("--iglob", include);
+  }
+
+  const rgGlobs = [
+    `-g !node_modules`,
+    `-g !.git`,
+    `-g !*.map`,
+    `-g !*.lock`,
+    ...(globs.length > 0 ? globs : []),
+  ];
+
+  try {
+    const { stdout } = await execAsync(
+      `rg --json --line-number --no-heading --color never --max-count 500 ` +
+      `${rgGlobs.join(" ")} ` +
+      `--regexp "${pattern.replace(/"/g, '\\"')}" ` +
+      `"${searchPath}"`,
+      {
+        timeout: 30_000,
+        maxBuffer: 1024 * 1024, // 1MB
+        windowsHide: true,
+      }
+    );
+
+    const lines = stdout.trim().split("\n").filter(Boolean);
+    const output: string[] = [];
+    let count = 0;
+
+    for (const line of lines) {
+      try {
+        const parsed: RgMatch = JSON.parse(line);
+        if (parsed.type === "match" && parsed.data) {
+          const filePath = parsed.data.path.text;
+          const lineNum = parsed.data.line_number;
+          const content = parsed.data.lines.text.trimEnd();
+          output.push(`${filePath}:${lineNum}: ${content}`);
+          count++;
+        }
+      } catch {
+        // skip non-JSON lines
+      }
+    }
+
+    if (count === 0) {
+      return { error: `No matches for "${pattern}" in ${searchPath}` };
+    }
+
+    return {
+      matches: output.join("\n"),
+      count,
+    };
+  } catch (err: unknown) {
+    const e = err as Error & { code?: number; killed?: boolean };
+    if (e.code === 1) {
+      // rg exit code 1 = no matches
+      return { error: `No matches for "${pattern}" in ${searchPath}` };
+    }
+    if (e.killed) {
+      return { error: "Search timed out after 30s" };
+    }
+    // Fall through to Node.js backend
+    return { error: "rg_error" };
+  }
+}
+
+function rgAvailable(): boolean {
+  try {
+    const result = require("node:child_process").execSync("rg --version", { stdio: "pipe" });
+    return result.toString().startsWith("ripgrep");
+  } catch {
+    return false;
+  }
+}
+
+/* ============================================================
+ * Node.js fallback
+ * ============================================================ */
 
 interface Match {
   file: string;
@@ -21,10 +124,8 @@ function walkDir(dir: string, globFilter?: string): string[] {
     if (!entry.isFile()) continue;
     if (entry.name.startsWith(".")) continue;
     const fullPath = path.join(entry.parentPath || dir, entry.name);
-    // Skip node_modules, dist, .git
     if (fullPath.includes("node_modules") || fullPath.includes("/dist/") || fullPath.includes(".git")) continue;
     if (globFilter) {
-      // Simple glob: **/*.ts → ends with .ts, src/** → starts with src/
       if (globFilter.startsWith("**/")) {
         const ext = globFilter.slice(3);
         if (!entry.name.endsWith(ext)) continue;
@@ -36,6 +137,12 @@ function walkDir(dir: string, globFilter?: string): string[] {
   }
   return results;
 }
+
+/* ============================================================
+ * Tool definition
+ * ============================================================ */
+
+const _rgCache = rgAvailable();
 
 export const grepTool: AgentTool = {
   name: "grep",
@@ -61,9 +168,9 @@ export const grepTool: AgentTool = {
     const searchPath = args.path ? String(args.path) : process.cwd();
     const include = args.include ? String(args.include) : undefined;
 
-    let regex: RegExp;
+    // Validate regex
     try {
-      regex = new RegExp(pattern, "g");
+      new RegExp(pattern, "g");
     } catch {
       return {
         content: [{ type: "text", text: `Error: invalid regex pattern "${pattern}"` }],
@@ -71,6 +178,28 @@ export const grepTool: AgentTool = {
     }
 
     try {
+      // Try ripgrep first
+      if (_rgCache) {
+        const result = await searchWithRg(pattern, searchPath, include);
+        if ("matches" in result) {
+          const truncated = result.count >= 500 ? `\n... (results truncated at 500 matches)` : "";
+          return {
+            content: [
+              {
+                type: "text",
+                text: `Found ${result.count} match(es) for "${pattern}" in ${searchPath}:\n\n${result.matches}${truncated}`,
+              },
+            ],
+            details: { count: result.count, truncated: result.count >= 500, backend: "ripgrep" },
+          };
+        }
+        if (result.error !== "rg_error") {
+          return { content: [{ type: "text", text: result.error }] };
+        }
+        // rg_error → fall through to Node.js
+      }
+
+      // Node.js fallback
       const stat = fs.statSync(searchPath);
       let files: string[] = [];
 
@@ -82,12 +211,12 @@ export const grepTool: AgentTool = {
         return { content: [{ type: "text", text: `Error: ${searchPath} is not a file or directory` }] };
       }
 
+      const regex = new RegExp(pattern, "g");
       const matches: Match[] = [];
       const MAX_MATCHES = 500;
 
       for (const file of files) {
         if (matches.length >= MAX_MATCHES) break;
-
         try {
           const content = fs.readFileSync(file, "utf-8");
           const lines = content.split("\n");
@@ -122,7 +251,7 @@ export const grepTool: AgentTool = {
             text: `Found ${matches.length} match(es) for "${pattern}" in ${searchPath}:\n\n${output}${truncated}`,
           },
         ],
-        details: { count: matches.length, truncated: matches.length >= MAX_MATCHES },
+        details: { count: matches.length, truncated: matches.length >= MAX_MATCHES, backend: "node" },
       };
     } catch (err) {
       return {

@@ -533,6 +533,7 @@ export class Agent {
         this._emit({
           type: "tool_execution_end",
           toolCallId: toolCall.id,
+          toolName: toolCall.name,
           result: { error: hookResult.reason || "Blocked" },
         });
         return {
@@ -554,7 +555,8 @@ export class Agent {
       this._emit({
         type: "tool_execution_end",
         toolCallId: toolCall.id,
-        result: { error: `Unknown tool: ${toolCall.name}` },
+        toolName: toolCall.name,
+        result:{ error: `Unknown tool: ${toolCall.name}` },
       });
       return {
         role: "toolResult",
@@ -610,7 +612,8 @@ export class Agent {
       this._emit({
         type: "tool_execution_end",
         toolCallId: toolCall.id,
-        result: finalResult,
+        toolName: toolCall.name,
+        result:finalResult,
       });
 
       return {
@@ -628,7 +631,8 @@ export class Agent {
       this._emit({
         type: "tool_execution_end",
         toolCallId: toolCall.id,
-        result: { error: String(err) },
+        toolName: toolCall.name,
+        result:{ error: String(err) },
       });
       return {
         role: "toolResult",

@@ -145,14 +145,21 @@ function loadSkills(): SkillInfo[] {
  * System prompt builder
  * ============================================================ */
 
-function buildSystemPrompt(skills: SkillInfo[]): string {
+function buildSystemPrompt(skills: SkillInfo[], workspaceRoot: string): string {
+  const osInfo = process.platform === "win32"
+    ? `Windows ${process.arch}`
+    : `${process.platform} ${process.arch}`;
+
   const parts: string[] = [
     "You are DDJ, a fast AI coding agent. Tools: read, write, edit, bash, glob, grep.",
+    "",
+    `Workspace: ${workspaceRoot}`,
+    `Platform: ${osInfo}`,
     "",
     "RULES:",
     "1. Act directly. Call tools immediately — never explain what you'll do before doing it.",
     "2. Prefer glob/grep to find files. Use bash for git, npm, and build commands.",
-    "3. Write/edit files directly. Create parent directories as needed.",
+    "3. Write/edit files directly inside the workspace. Create parent directories as needed.",
     "4. Keep text responses short — brief summary after tools finish.",
     "5. When editing, use exact text match — verify uniqueness.",
   ];
@@ -335,27 +342,75 @@ async function selectModel(rl: ReturnType<typeof createInterface>): Promise<Mode
 }
 
 /* ============================================================
- * Display agent events (streaming)
+ * Display agent events (streaming) with Claude Code-style animations
  * ============================================================ */
+
+const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+let spinnerTimer: ReturnType<typeof setInterval> | null = null;
+let spinnerIdx = 0;
+let currentSpinnerLabel = "";
+
+// Track thinking state
+let inThinkingBlock = false;
+let thinkingHasContent = false;
+
+// Track bash execution for summary display
+let bashOutputSize = 0;
+let bashStderrSize = 0;
+let bashLastLines: string[] = [];
+
+function startSpinner(label: string): void {
+  stopSpinner();
+  currentSpinnerLabel = label;
+  spinnerIdx = 0;
+  const frame = SPINNER_FRAMES[0];
+  write(`  ${colors.cyan}${frame}${colors.reset} ${currentSpinnerLabel}`);
+  spinnerTimer = setInterval(() => {
+    const frame = SPINNER_FRAMES[spinnerIdx];
+    process.stdout.write(
+      `\r\x1b[0K  ${colors.cyan}${frame}${colors.reset} ${currentSpinnerLabel}`
+    );
+    spinnerIdx = (spinnerIdx + 1) % SPINNER_FRAMES.length;
+  }, 100);
+}
+
+function stopSpinner(): void {
+  if (spinnerTimer) {
+    clearInterval(spinnerTimer);
+    spinnerTimer = null;
+    process.stdout.write(`\r\x1b[0K`);
+  }
+}
 
 function displayEvent(event: AgentEvent): void {
   switch (event.type) {
     case "message_update": {
       const ev = event.assistantMessageEvent;
       if (ev.type === "thinking_start") {
-        writeln(`\n${colors.dim}  ╭─ Thinking…${colors.reset}`);
+        if (!inThinkingBlock) {
+          inThinkingBlock = true;
+          thinkingHasContent = false;
+          writeln(`\n${colors.dim}  ╭─ Thinking…${colors.reset}`);
+        }
       }
       if (ev.type === "thinking_delta") {
+        thinkingHasContent = true;
         write(`${colors.dim}${ev.delta}${colors.reset}`);
       }
       if (ev.type === "thinking_end") {
-        writeln(`\n${colors.dim}  ╰─ (thinking done)${colors.reset}\n`);
+        if (inThinkingBlock) {
+          inThinkingBlock = false;
+          if (thinkingHasContent) {
+            writeln(`\n${colors.dim}  ╰─ done${colors.reset}\n`);
+          }
+        }
       }
       if (ev.type === "toolcall_start") {
-        writeln(`\n${colors.dim}  ╭─ Generating code…${colors.reset}`);
+        // Model is generating tool arguments — brief spinner
+        startSpinner("Preparing…");
       }
       if (ev.type === "toolcall_end") {
-        writeln(`${colors.dim} ready${colors.reset}`);
+        stopSpinner();
       }
       if (ev.type === "text_delta") {
         write(ev.delta);
@@ -363,15 +418,46 @@ function displayEvent(event: AgentEvent): void {
       break;
     }
     case "tool_execution_start": {
-      writeln(
-        `${colors.dim}  ╭─${colors.reset}${colors.yellow} ${event.toolName}${colors.reset}`
-      );
+      bashOutputSize = 0;
+      bashStderrSize = 0;
+      bashLastLines = [];
+      if (event.toolName === "bash") {
+        startSpinner("bash running…");
+      } else {
+        startSpinner(`${event.toolName}…`);
+      }
+      break;
+    }
+    case "tool_execution_update": {
+      const update = event.partialResult as { type?: string; text?: string } | undefined;
+      if (update?.type === "stdout") {
+        bashOutputSize += (update.text || "").length;
+        // Keep last few lines for summary
+        const lines = (update.text || "").split("\n").filter(Boolean);
+        bashLastLines.push(...lines);
+        if (bashLastLines.length > 6) bashLastLines = bashLastLines.slice(-6);
+        // Update spinner label with progress
+        currentSpinnerLabel = `bash running… ${(bashOutputSize / 1024).toFixed(1)}KB`;
+      } else if (update?.type === "stderr") {
+        bashStderrSize += (update.text || "").length;
+      }
       break;
     }
     case "tool_execution_end": {
-      writeln(
-        `${colors.dim}  ╰─${colors.reset}${colors.green} done${colors.reset}${event.toolCallId ? '' : ''}`
-      );
+      stopSpinner();
+      // Show bash summary
+      if (event.toolName === "bash") {
+        // Show last few lines of bash output as summary
+        if (bashLastLines.length > 0) {
+          const preview = bashLastLines.slice(-4).map((l) => l.slice(0, 120)).join("\n");
+          writeln(`${colors.dim}  │${colors.reset} ${preview}`);
+        }
+        const sizeInfo = bashOutputSize > 0 ? ` ${(bashOutputSize / 1024).toFixed(1)}KB stdout` : "";
+        const errInfo = bashStderrSize > 0 ? ` ${bashStderrSize}B stderr` : "";
+        writeln(
+          `${colors.dim}  ╰─${colors.reset}${colors.green} done${colors.reset}${colors.dim}${sizeInfo}${errInfo}${colors.reset}`
+        );
+      }
       break;
     }
     case "turn_end": {
@@ -413,8 +499,11 @@ async function main() {
   // Load skills
   const skills = loadSkills();
 
+  // Workspace root for permission checks (captured before anything else)
+  const workspaceRoot = path.resolve(process.cwd());
+
   // Build system prompt
-  const systemPrompt = buildSystemPrompt(skills);
+  const systemPrompt = buildSystemPrompt(skills, workspaceRoot);
 
   // Initial model selection
   let currentModel: Model;
@@ -474,19 +563,17 @@ async function main() {
   writeln(`${c.bold}${c.cyan}       ██████╔╝██████╔╝ ╚████╔╝${c.reset}`);
   writeln(`${c.bold}${c.cyan}       ╚═════╝ ╚═════╝   ╚═══╝ ${c.reset}`);
   writeln(``);
-  writeln(`       ${c.bold}${c.magenta}Dream-Driven Journey${c.reset}  ${c.dim}v0.2.0${c.reset}`);
+  writeln(`       ${c.bold}${c.magenta}Dream-Driven Journey${c.reset}  ${c.dim}v1.0.0${c.reset}`);
   writeln(`       ${c.dim}──────────────────────────────${c.reset}`);
   writeln(``);
   writeln(`  ${c.dim}▸${c.reset} Model    ${c.green}${currentModel.label || currentModel.id}${c.reset}`);
   writeln(`  ${c.dim}▸${c.reset} Think    ${c.yellow}${thinkingLevel}${c.reset}`);
+  writeln(`  ${c.dim}▸${c.reset} Workspace ${c.cyan}${workspaceRoot}${c.reset}`);
   writeln(`  ${c.dim}▸${c.reset} Skills   ${skills.length > 0 ? skills.map((s) => s.name).join(", ") : c.dim + "none" + c.reset}`);
   writeln(`  ${c.dim}▸${c.reset} Help     ${c.yellow}/help${c.reset}`);
   writeln(``);
   writeln(`  ${c.dim}✦${c.reset} Ask anything, I'll help you code.`);
   writeln(``);
-
-  // Create the agent
-  let agent = createAgent(currentModel, systemPrompt, thinkingLevel);
 
   // Create readline interface
   const rl = createInterface({
@@ -495,9 +582,12 @@ async function main() {
     terminal: true,
   });
 
+  // Create the agent
+  let agent = createAgent(currentModel, systemPrompt, thinkingLevel, workspaceRoot, rl);
+
   // Helper to submit a prompt
   async function submitPrompt(input: string): Promise<void> {
-    agent = createAgent(currentModel, systemPrompt, thinkingLevel);
+    agent = createAgent(currentModel, systemPrompt, thinkingLevel, workspaceRoot, rl);
 
     const unsubscribe = agent.subscribe((event) => {
       displayEvent(event);
@@ -733,6 +823,126 @@ async function main() {
 }
 
 /* ============================================================
+ * Permission system
+ * ============================================================ */
+
+/** Check if a path is inside the workspace */
+function isInsideWorkspace(targetPath: string, workspace: string): boolean {
+  const resolved = path.resolve(targetPath);
+  const normalizedWorkspace = path.resolve(workspace) + path.sep;
+  return resolved.startsWith(normalizedWorkspace) || resolved === path.resolve(workspace);
+}
+
+/** Patterns that indicate dangerous shell commands */
+const DANGEROUS_PATTERNS: Array<{ pattern: RegExp; label: string }> = [
+  { pattern: /rm\s+-rf\s+\/(\*|\s|$)/, label: "rm -rf / (recursive delete root)" },
+  { pattern: /rm\s+-rf\s+--no-preserve-root/, label: "rm -rf --no-preserve-root" },
+  { pattern: /rm\s+-rf\s+\/dev\//, label: "rm -rf /dev/ (delete devices)" },
+  { pattern: />\s*\/dev\/sd/, label: "write to raw disk device" },
+  { pattern: />\s*\/dev\/nvme/, label: "write to raw NVMe device" },
+  { pattern: /dd\s+if=.*of=\/dev\//, label: "dd to disk device" },
+  { pattern: /mkfs\./, label: "mkfs (format filesystem)" },
+  { pattern: /chmod\s+.*777\s+\//, label: "chmod 777 on root" },
+  { pattern: /chown\s+-R\s+\//, label: "chown -R on root" },
+  { pattern: /:\s*\(\)\s*\{\s*:\s*\|:\s*&\s*\}\s*;:/, label: "fork bomb" },
+  { pattern: /curl\s+.*\|\s*(ba)?sh/, label: "curl pipe to shell" },
+  { pattern: /wget\s+.*\|\s*(ba)?sh/, label: "wget pipe to shell" },
+  { pattern: /git\s+push\s+--force.*(main|master)/, label: "git push --force to main/master" },
+  { pattern: /sudo\s+rm\s+-rf/, label: "sudo rm -rf" },
+  { pattern: /rm\s+-rf\s+.*\.git/, label: "rm -rf .git (delete git repo)" },
+  { pattern: /rm\s+-rf\s+.*\.env/, label: "rm -rf .env files" },
+];
+
+function detectDangerousCommand(command: string): string | null {
+  for (const { pattern, label } of DANGEROUS_PATTERNS) {
+    if (pattern.test(command)) {
+      return label;
+    }
+  }
+  return null;
+}
+
+/** Extract absolute paths from a command string (Windows + Unix) */
+function extractAbsolutePaths(command: string): string[] {
+  const paths: string[] = [];
+  // Windows: D:\path, D:/path, D:path (any drive letter followed by colon)
+  // Also handles quoted paths like "D:\path"
+  const winRe = /([A-Za-z]:[\\\/][^\s"']*|[A-Za-z]:[^\s\\\/"']{2,})/g;
+  // Unix absolute paths: /home/... /etc/... /d/... (but not flags like --xxx)
+  const unixRe = /(?<!\w)\/(?:[^\s"']+\/)+[^\s"']*/g;
+  let m;
+  while ((m = winRe.exec(command)) !== null) {
+    // Filter out things that look like URLs or flags
+    const candidate = m[1];
+    if (!/^[A-Za-z]:\/\//.test(candidate)) {
+      paths.push(candidate);
+    }
+  }
+  while ((m = unixRe.exec(command)) !== null) {
+    const candidate = m[0];
+    // Skip flags like --xxx/yyy
+    if (!/^-[a-zA-Z]/.test(candidate)) {
+      paths.push(candidate);
+    }
+  }
+  return paths;
+}
+
+/** Check if a bash command is a write operation or navigates outside workspace */
+function isWriteOrRiskyCommand(command: string): boolean {
+  return /\b(mkdir|rm\b|rmdir|touch|mv |cp |copy |move |del |erase|dd|tee|chmod|chown|icacls|attrib|git\s+clone|git\s+init|npm\s+init|npm\s+install|pip\s+install|pip3\s+install|>\s*\S|>>\s*\S|cd\s+[A-Za-z]:|pushd\s+[A-Za-z]:|cd\s+\/|pushd\s+\/|New-Item|Set-Content|Out-File|npx\s+create)/i.test(command);
+}
+
+/** Split a bash command by && and ;, check each segment for paths */
+async function checkAllCommandSegments(
+  command: string,
+  workspaceRoot: string
+): Promise<string | null> {
+  const segments = command.split(/&&|;/);
+  for (const seg of segments) {
+    if (isWriteOrRiskyCommand(seg)) {
+      const absPaths = extractAbsolutePaths(seg);
+      for (const p of absPaths) {
+        if (!isInsideWorkspace(p, workspaceRoot)) {
+          return p;
+        }
+      }
+    }
+    // Also check for cd to external location (the write might be in the next segment)
+    const cdMatch = seg.match(/(?:cd|pushd)\s+(.+)/i);
+    if (cdMatch) {
+      const cdTarget = cdMatch[1].trim().replace(/^\/d\s+/, "");
+      if (cdTarget && !isInsideWorkspace(cdTarget, workspaceRoot)) {
+        return cdTarget;
+      }
+    }
+    // Check for environment variables that expand to external paths
+    if (/(?:%[A-Z]+:|%[A-Z]+%)/i.test(seg) && isWriteOrRiskyCommand(seg)) {
+      return "(external env path)";
+    }
+  }
+  return null;
+}
+
+/** Format confirmation prompt */
+async function confirmAction(
+  rl: ReturnType<typeof createInterface>,
+  message: string
+): Promise<boolean> {
+  writeln(`\n${colors.yellow}  ⚠ ${message}${colors.reset}`);
+  const answer = await rl.question(
+    `  ${colors.dim}[Enter]${colors.reset} confirm  ${colors.dim}[n]${colors.reset} reject > `
+  );
+  writeln("");
+  if (answer.toLowerCase() === "n") {
+    writeln(`  ${colors.red}✗ Blocked${colors.reset}`);
+    return false;
+  }
+  writeln(`  ${colors.green}✓ Confirmed${colors.reset}`);
+  return true;
+}
+
+/* ============================================================
  * Agent factory
  * ============================================================ */
 
@@ -745,7 +955,13 @@ function estimateMessageTokens(msg: AgentMessage): number {
   return estimateTokens(JSON.stringify(msg));
 }
 
-function createAgent(model: Model, systemPrompt: string, thinkingLevel: import("@ddj-ai/core").ThinkingLevel = "low"): Agent {
+function createAgent(
+  model: Model,
+  systemPrompt: string,
+  thinkingLevel: import("@ddj-ai/core").ThinkingLevel = "low",
+  workspaceRoot?: string,
+  rl?: ReturnType<typeof createInterface>
+): Agent {
   const MODEL_MAX_TOKENS = model.maxTokens || 128000;
   const COMPACT_THRESHOLD = Math.floor(MODEL_MAX_TOKENS * 0.6); // compact at 60%
   const KEEP_RECENT = 10;
@@ -756,6 +972,74 @@ function createAgent(model: Model, systemPrompt: string, thinkingLevel: import("
       model,
       thinkingLevel,
       tools: builtinTools as AgentTool[],
+      workspaceRoot,
+    },
+    beforeToolCall: !workspaceRoot ? undefined : async (params) => {
+      const toolName = params.toolCall.name;
+      const args = params.args;
+
+      // --- Bash: dangerous command + path permission ---
+      if (toolName === "bash") {
+        const command = String(args.command || "");
+
+        // 1. Check for dangerous patterns (always block unless confirmed)
+        const dangerous = detectDangerousCommand(command);
+        if (dangerous && rl) {
+          const ok = await confirmAction(
+            rl,
+            `Dangerous command detected: ${dangerous}\n  Command: ${command.slice(0, 100)}`
+          );
+          if (!ok) {
+            return { block: true, reason: `Blocked dangerous command: ${dangerous}` };
+          }
+        }
+
+        // 2. Check cwd is inside workspace
+        const cwd = args.cwd ? String(args.cwd) : undefined;
+        if (cwd && !isInsideWorkspace(cwd, workspaceRoot) && rl) {
+          const ok = await confirmAction(
+            rl,
+            `bash cwd outside workspace: ${cwd}`
+          );
+          if (!ok) {
+            return { block: true, reason: "Blocked bash outside workspace" };
+          }
+        }
+
+        // 3. Check for write/risky commands targeting paths outside workspace
+        const externalPath = await checkAllCommandSegments(command, workspaceRoot);
+        if (externalPath && rl) {
+          const ok = await confirmAction(
+            rl,
+            `Write/risky command targets path outside workspace: ${externalPath}\n  Command: ${command.slice(0, 80)}`
+          );
+          if (!ok) {
+            return {
+              block: true,
+              reason: `User rejected this operation. The user does NOT want you to create/modify files outside the workspace (${workspaceRoot}). Do NOT retry with different paths or approaches — respect the user's decision.`
+            };
+          }
+        }
+
+        return;
+      }
+
+      // --- Write/Edit: path permission check ---
+      if (toolName === "write" || toolName === "edit") {
+        const filePath = args.path ? String(args.path) : "";
+        if (!filePath) return;
+
+        if (!isInsideWorkspace(filePath, workspaceRoot) && rl) {
+          const ok = await confirmAction(
+            rl,
+            `${toolName} target outside workspace: ${filePath}`
+          );
+          if (!ok) {
+            return { block: true, reason: `Blocked ${toolName} outside workspace` };
+          }
+        }
+        return;
+      }
     },
     convertToLlm(messages: AgentMessage[]) {
       return messages

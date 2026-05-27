@@ -90,7 +90,7 @@ export type AgentEvent =
   | { type: "message_update"; assistantMessageEvent: import("@ddj-ai/core").StreamEvent; message: AgentAssistantMessage }
   | { type: "tool_execution_start"; toolCallId: string; toolName: string; args: Record<string, unknown> }
   | { type: "tool_execution_update"; toolCallId: string; partialResult: unknown }
-  | { type: "tool_execution_end"; toolCallId: string; result: unknown }
+  | { type: "tool_execution_end"; toolCallId: string; toolName: string; result: unknown }
   | { type: "error"; error: unknown };
 
 /* ============================================================
@@ -109,6 +109,8 @@ export interface AgentState {
   errorMessage?: string;
   /** Cumulative token usage across all turns */
   cumulativeUsage?: import("@ddj-ai/core").TokenUsage;
+  /** Workspace root directory for permission checks */
+  workspaceRoot?: string;
 }
 
 /* ============================================================
@@ -159,6 +161,7 @@ export interface AgentConfig {
     thinkingLevel?: ThinkingLevel;
     tools?: AgentTool[];
     messages?: AgentMessage[];
+    workspaceRoot?: string;
   };
   /** Required: convert AgentMessage[] to LLM-compatible Message[] */
   convertToLlm(messages: AgentMessage[]): Message[] | Promise<Message[]>;

@@ -84,6 +84,7 @@ export type AgentEvent = {
 } | {
     type: "tool_execution_end";
     toolCallId: string;
+    toolName: string;
     result: unknown;
 } | {
     type: "error";
@@ -101,6 +102,8 @@ export interface AgentState {
     errorMessage?: string;
     /** Cumulative token usage across all turns */
     cumulativeUsage?: import("@ddj-ai/core").TokenUsage;
+    /** Workspace root directory for permission checks */
+    workspaceRoot?: string;
 }
 export interface BeforeToolCallHookParams {
     toolCall: {
@@ -148,6 +151,7 @@ export interface AgentConfig {
         thinkingLevel?: ThinkingLevel;
         tools?: AgentTool[];
         messages?: AgentMessage[];
+        workspaceRoot?: string;
     };
     /** Required: convert AgentMessage[] to LLM-compatible Message[] */
     convertToLlm(messages: AgentMessage[]): Message[] | Promise<Message[]>;
