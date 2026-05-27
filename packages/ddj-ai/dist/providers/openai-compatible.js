@@ -118,11 +118,6 @@ export async function* streamOpenAI(model, context, config) {
     const apiKey = config.apiKey || process.env["OPENAI_API_KEY"];
     if (!apiKey)
         throw new Error("No API key provided");
-    // Create a combined signal with 120s timeout
-    const timeoutSignal = AbortSignal.timeout(120_000);
-    const combinedSignal = config.signal
-        ? AbortSignal.any([config.signal, timeoutSignal])
-        : timeoutSignal;
     const messages = convertMessages(context);
     const body = buildRequestBody(model, messages, context, config.thinkingLevel, true);
     const headers = {
@@ -132,14 +127,14 @@ export async function* streamOpenAI(model, context, config) {
     if (model.provider === "cerebras") {
         headers["cerebras-version"] = "2024-12-01";
     }
-    const combinedSignal2 = config.signal
+    const signal = config.signal
         ? AbortSignal.any([config.signal, AbortSignal.timeout(120_000)])
         : AbortSignal.timeout(120_000);
     const response = await fetch(`${baseUrl}/chat/completions`, {
         method: "POST",
         headers,
         body: JSON.stringify(body),
-        signal: combinedSignal2,
+        signal,
     });
     if (!response.ok) {
         const text = await response.text();

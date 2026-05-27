@@ -111,22 +111,14 @@ function loadSkills() {
  * ============================================================ */
 function buildSystemPrompt(skills) {
     const parts = [
-        "You are DDJ, an AI coding assistant with access to the following tools: read, write, edit, bash.",
+        "You are DDJ, a fast AI coding agent. Tools: read, write, edit, bash, glob, grep.",
         "",
-        "You help the user with coding tasks by reading files, writing code, editing files, and running commands.",
-        "When executing bash commands, prefer using built-in shell commands over external utilities.",
-        "When writing files, create parent directories as needed.",
-        "",
-        "When editing files, use search/replace with exact, unique text matches.",
-        "",
-        "Available commands:",
-        "- /model: Switch AI model",
-        "- /new: Start a new session",
-        "- /help: Show this help",
-        "- /quit: Exit the agent",
-        "- /session: Show session info",
-        "- /compact: Compact the conversation context",
-        "- /skills: List loaded skills",
+        "RULES:",
+        "1. Act directly. Call tools immediately — never explain what you'll do before doing it.",
+        "2. Prefer glob/grep to find files. Use bash for git, npm, and build commands.",
+        "3. Write/edit files directly. Create parent directories as needed.",
+        "4. Keep text responses short — brief summary after tools finish.",
+        "5. When editing, use exact text match — verify uniqueness.",
     ];
     // Add skill instructions
     if (skills.length > 0) {
@@ -287,6 +279,12 @@ function displayEvent(event) {
             if (ev.type === "thinking_end") {
                 writeln(`\n${colors.dim}  ╰─ (thinking done)${colors.reset}\n`);
             }
+            if (ev.type === "toolcall_start") {
+                writeln(`\n${colors.dim}  ╭─ Generating code…${colors.reset}`);
+            }
+            if (ev.type === "toolcall_end") {
+                writeln(`${colors.dim} ready${colors.reset}`);
+            }
             if (ev.type === "text_delta") {
                 write(ev.delta);
             }
@@ -298,6 +296,14 @@ function displayEvent(event) {
         }
         case "tool_execution_end": {
             writeln(`${colors.dim}  ╰─${colors.reset}${colors.green} done${colors.reset}${event.toolCallId ? '' : ''}`);
+            break;
+        }
+        case "turn_end": {
+            if (event.cumulativeUsage) {
+                const u = event.cumulativeUsage;
+                const totalK = (u.total / 1000).toFixed(1);
+                writeln(`${colors.dim}  ╺ turn: ${u.input}↑ ${u.output}↓ tokens | total: ${totalK}k${colors.reset}`);
+            }
             break;
         }
     }
@@ -381,7 +387,7 @@ async function main() {
     writeln(`${c.bold}${c.cyan}       ██████╔╝██████╔╝ ╚████╔╝${c.reset}`);
     writeln(`${c.bold}${c.cyan}       ╚═════╝ ╚═════╝   ╚═══╝ ${c.reset}`);
     writeln(``);
-    writeln(`       ${c.bold}${c.magenta}Dream-Driven Journey${c.reset}  ${c.dim}v0.1.0${c.reset}`);
+    writeln(`       ${c.bold}${c.magenta}Dream-Driven Journey${c.reset}  ${c.dim}v0.2.0${c.reset}`);
     writeln(`       ${c.dim}──────────────────────────────${c.reset}`);
     writeln(``);
     writeln(`  ${c.dim}▸${c.reset} Model    ${c.green}${currentModel.label || currentModel.id}${c.reset}`);
@@ -433,7 +439,7 @@ async function main() {
             switch (cmd) {
                 case "think":
                 case "thinking": {
-                    const levels = ["off", "minimal", "low", "medium", "high"];
+                    const levels = ["off", "minimal", "low", "medium", "high", "xhigh"];
                     if (args.length > 0) {
                         const idx = levels.indexOf(args[0]);
                         if (idx >= 0) {
@@ -628,7 +634,17 @@ async function main() {
 /* ============================================================
  * Agent factory
  * ============================================================ */
+/** Rough token estimation: ~4 chars per token for mixed content */
+function estimateTokens(text) {
+    return Math.ceil(text.length / 4);
+}
+function estimateMessageTokens(msg) {
+    return estimateTokens(JSON.stringify(msg));
+}
 function createAgent(model, systemPrompt, thinkingLevel = "low") {
+    const MODEL_MAX_TOKENS = model.maxTokens || 128000;
+    const COMPACT_THRESHOLD = Math.floor(MODEL_MAX_TOKENS * 0.6); // compact at 60%
+    const KEEP_RECENT = 10;
     return new Agent({
         initialState: {
             systemPrompt,
@@ -669,6 +685,31 @@ function createAgent(model, systemPrompt, thinkingLevel = "low") {
                     reasoning_content: a.reasoning_content,
                 };
             });
+        },
+        transformContext(messages) {
+            // Estimate total tokens
+            let totalTokens = 0;
+            for (const msg of messages) {
+                totalTokens += estimateMessageTokens(msg);
+            }
+            totalTokens += estimateTokens(systemPrompt);
+            if (totalTokens < COMPACT_THRESHOLD)
+                return messages;
+            // Compact: keep system prompt, first user message, and last KEEP_RECENT messages
+            const firstUserIdx = messages.findIndex((m) => m.role === "user");
+            const cutoff = messages.length - KEEP_RECENT;
+            if (firstUserIdx < 0 || firstUserIdx >= cutoff)
+                return messages;
+            const kept = [];
+            kept.push(messages[firstUserIdx]); // original ask
+            const removed = messages.length - KEEP_RECENT - 1;
+            kept.push({
+                role: "user",
+                content: `[Context compacted: ${removed} messages removed to stay within token budget. Key work done so far is preserved in the remaining context.]`,
+                timestamp: Date.now(),
+            });
+            kept.push(...messages.slice(-KEEP_RECENT));
+            return kept;
         },
     });
 }

@@ -132,7 +132,7 @@ export interface Model<P extends string = string> {
 }
 
 /** Thinking levels */
-export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high";
+export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 
 /** Image content for vision */
 export interface ImageContentBlock {

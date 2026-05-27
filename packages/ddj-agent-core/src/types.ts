@@ -84,7 +84,7 @@ export type AgentEvent =
   | { type: "agent_start" }
   | { type: "agent_end"; messages: AgentMessage[] }
   | { type: "turn_start" }
-  | { type: "turn_end"; message: AgentAssistantMessage; toolResults: AgentToolResultMessage[] }
+  | { type: "turn_end"; message: AgentAssistantMessage; toolResults: AgentToolResultMessage[]; cumulativeUsage?: import("@ddj-ai/core").TokenUsage }
   | { type: "message_start"; message: AgentMessage }
   | { type: "message_end"; message: AgentMessage }
   | { type: "message_update"; assistantMessageEvent: import("@ddj-ai/core").StreamEvent; message: AgentAssistantMessage }
@@ -107,6 +107,8 @@ export interface AgentState {
   streamingMessage?: AgentAssistantMessage;
   pendingToolCalls: Set<string>;
   errorMessage?: string;
+  /** Cumulative token usage across all turns */
+  cumulativeUsage?: import("@ddj-ai/core").TokenUsage;
 }
 
 /* ============================================================

@@ -176,7 +176,7 @@ export class Agent {
                 thinkingLevel: this._state.thinkingLevel,
             };
             const assistantMessage = await this._callLlm(llmContext, options);
-            // 5. Add assistant message to state
+            // 5. Add assistant message to state + track usage
             const agentAssistantMsg = {
                 role: "assistant",
                 content: assistantMessage.content,
@@ -188,6 +188,15 @@ export class Agent {
             this._state.messages.push(agentAssistantMsg);
             this._emit({ type: "message_start", message: agentAssistantMsg });
             this._emit({ type: "message_end", message: agentAssistantMsg });
+            // Track cumulative token usage
+            if (assistantMessage.usage) {
+                const prev = this._state.cumulativeUsage;
+                this._state.cumulativeUsage = {
+                    input: (prev?.input || 0) + assistantMessage.usage.input,
+                    output: (prev?.output || 0) + assistantMessage.usage.output,
+                    total: (prev?.total || 0) + assistantMessage.usage.total,
+                };
+            }
             // 6. Extract tool calls
             const toolCalls = assistantMessage.content.filter((c) => c.type === "toolCall");
             // 7. Execute tools (if any)
@@ -210,9 +219,9 @@ export class Agent {
                     toolResults.push(...results);
                 }
                 // Add tool results to state (in the order the LLM called them, not execution order)
+                const resultMap = new Map(toolResults.map((r) => [r.toolCallId, r]));
                 const orderedResults = toolCalls.map((tc) => {
-                    const r = toolResults.find((tr) => tr.toolCallId === tc.id);
-                    return (r || {
+                    return (resultMap.get(tc.id) || {
                         role: "toolResult",
                         toolCallId: tc.id,
                         toolName: tc.name,
@@ -259,6 +268,7 @@ export class Agent {
                 type: "turn_end",
                 message: agentAssistantMsg,
                 toolResults,
+                cumulativeUsage: this._state.cumulativeUsage,
             });
             // 8. Check follow-up queue
             if (toolCalls.length === 0) {

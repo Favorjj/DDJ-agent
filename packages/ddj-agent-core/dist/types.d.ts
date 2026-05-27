@@ -61,6 +61,7 @@ export type AgentEvent = {
     type: "turn_end";
     message: AgentAssistantMessage;
     toolResults: AgentToolResultMessage[];
+    cumulativeUsage?: import("@ddj-ai/core").TokenUsage;
 } | {
     type: "message_start";
     message: AgentMessage;
@@ -98,6 +99,8 @@ export interface AgentState {
     streamingMessage?: AgentAssistantMessage;
     pendingToolCalls: Set<string>;
     errorMessage?: string;
+    /** Cumulative token usage across all turns */
+    cumulativeUsage?: import("@ddj-ai/core").TokenUsage;
 }
 export interface BeforeToolCallHookParams {
     toolCall: {

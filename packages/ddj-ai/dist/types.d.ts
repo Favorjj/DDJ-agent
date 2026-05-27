@@ -103,7 +103,7 @@ export interface Model<P extends string = string> {
     thinkingBudgets?: Partial<Record<ThinkingLevel, number>>;
 }
 /** Thinking levels */
-export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high";
+export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 /** Image content for vision */
 export interface ImageContentBlock {
     type: "image";
