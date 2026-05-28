@@ -5,7 +5,7 @@
  * A terminal-based coding agent with tool calling, skills, sessions,
  * and multi-provider LLM support.
  */
-import { Agent, builtinTools } from "@ddj-ai/agent-core";
+import { Agent, builtinTools, connectMCPServers, disconnectMCPServers } from "@ddj-ai/agent-core";
 import { getModel, listProviders, listModels, getProviderApiKey, getProviderBaseUrl } from "@ddj-ai/core";
 import { createInterface } from "node:readline/promises";
 import * as fs from "node:fs";
@@ -19,6 +19,7 @@ const CONFIG_DIR = path.join(HOME, ".ddj");
 const CONFIG_PATH = path.join(CONFIG_DIR, "config.json");
 const SESSIONS_DIR = path.join(CONFIG_DIR, "sessions");
 const SKILLS_DIR = path.join(CONFIG_DIR, "skills");
+const MCP_CONFIG_PATH = path.join(CONFIG_DIR, "mcp.json");
 function loadConfig() {
     try {
         if (fs.existsSync(CONFIG_PATH)) {
@@ -27,6 +28,15 @@ function loadConfig() {
     }
     catch { }
     return {};
+}
+function loadMCPConfig() {
+    try {
+        if (fs.existsSync(MCP_CONFIG_PATH)) {
+            return JSON.parse(fs.readFileSync(MCP_CONFIG_PATH, "utf-8"));
+        }
+    }
+    catch { }
+    return { mcpServers: {} };
 }
 function saveConfig(config) {
     try {
@@ -109,7 +119,7 @@ function loadSkills() {
 /* ============================================================
  * System prompt builder
  * ============================================================ */
-function buildSystemPrompt(skills, workspaceRoot) {
+function buildSystemPrompt(skills, workspaceRoot, mcpTools = []) {
     const osInfo = process.platform === "win32"
         ? `Windows ${process.arch}`
         : `${process.platform} ${process.arch}`;
@@ -126,6 +136,14 @@ function buildSystemPrompt(skills, workspaceRoot) {
         "4. Keep text responses short — brief summary after tools finish.",
         "5. When editing, use exact text match — verify uniqueness.",
     ];
+    // Add MCP tool listing
+    if (mcpTools.length > 0) {
+        parts.push("");
+        parts.push("## Available MCP Tools");
+        for (const t of mcpTools) {
+            parts.push(`- ${t.name}: ${t.description}`);
+        }
+    }
     // Add skill instructions
     if (skills.length > 0) {
         parts.push("");
@@ -412,8 +430,16 @@ async function main() {
     const skills = loadSkills();
     // Workspace root for permission checks (captured before anything else)
     const workspaceRoot = path.resolve(process.cwd());
-    // Build system prompt
-    const systemPrompt = buildSystemPrompt(skills, workspaceRoot);
+    // Connect MCP servers
+    const mcpConfig = loadMCPConfig();
+    let mcpState = await connectMCPServers(mcpConfig);
+    if (mcpState.failures.length > 0) {
+        for (const f of mcpState.failures) {
+            writeln(`${colors.yellow}  ⚠ MCP: ${f}${colors.reset}`);
+        }
+    }
+    // Build system prompt (with MCP tool info)
+    const systemPrompt = buildSystemPrompt(skills, workspaceRoot, mcpState.tools);
     // Initial model selection
     let currentModel;
     const savedProvider = config.defaultProvider || "deepseek";
@@ -472,7 +498,7 @@ async function main() {
     writeln(`${c.bold}${c.cyan}       ██████╔╝██████╔╝ ╚████╔╝${c.reset}`);
     writeln(`${c.bold}${c.cyan}       ╚═════╝ ╚═════╝   ╚═══╝ ${c.reset}`);
     writeln(``);
-    writeln(`       ${c.bold}${c.magenta}Dream-Driven Journey${c.reset}  ${c.dim}v1.0.0${c.reset}`);
+    writeln(`       ${c.bold}${c.magenta}Dream-Driven Journey${c.reset}  ${c.dim}v1.1.0${c.reset}`);
     writeln(`       ${c.dim}──────────────────────────────${c.reset}`);
     writeln(``);
     writeln(`  ${c.dim}▸${c.reset} Model    ${c.green}${currentModel.label || currentModel.id}${c.reset}`);
@@ -490,10 +516,10 @@ async function main() {
         terminal: true,
     });
     // Create the agent
-    let agent = createAgent(currentModel, systemPrompt, thinkingLevel, workspaceRoot, rl);
+    let agent = createAgent(currentModel, systemPrompt, thinkingLevel, workspaceRoot, rl, mcpState.tools);
     // Helper to submit a prompt
     async function submitPrompt(input) {
-        agent = createAgent(currentModel, systemPrompt, thinkingLevel, workspaceRoot, rl);
+        agent = createAgent(currentModel, systemPrompt, thinkingLevel, workspaceRoot, rl, mcpState.tools);
         const unsubscribe = agent.subscribe((event) => {
             displayEvent(event);
         });
@@ -584,6 +610,7 @@ async function main() {
                     writeln(`  ${colors.yellow}/new${colors.reset}           Start a new session`);
                     writeln(`  ${colors.yellow}/session${colors.reset}       Show current session info`);
                     writeln(`  ${colors.yellow}/skills${colors.reset}        List loaded skills`);
+                    writeln(`  ${colors.yellow}/mcp${colors.reset}           List MCP servers and tools`);
                     writeln(`  ${colors.yellow}/save${colors.reset}          Save current session`);
                     writeln(`  ${colors.yellow}/load <id>${colors.reset}     Load a previous session`);
                     writeln(`  ${colors.yellow}/list${colors.reset}          List saved sessions`);
@@ -610,7 +637,7 @@ async function main() {
                 case "new":
                 case "n": {
                     sessionId = `session_${Date.now()}`;
-                    agent = createAgent(currentModel, systemPrompt, thinkingLevel);
+                    agent = createAgent(currentModel, systemPrompt, thinkingLevel, workspaceRoot, rl, mcpState.tools);
                     writeln(`${colors.green}✓${colors.reset} New session started`);
                     break;
                 }
@@ -624,6 +651,24 @@ async function main() {
                     writeln(`  Skills: ${skills.length > 0 ? skills.map((s) => s.name).join(", ") : "none"}`);
                     writeln(``);
                     break;
+                case "mcp": {
+                    if (mcpState.clients.size === 0 && mcpState.failures.length === 0) {
+                        writeln(`${colors.yellow}No MCP servers configured.${colors.reset}`);
+                        writeln(`  Configure in ${colors.cyan}~/.ddj/mcp.json${colors.reset}`);
+                    }
+                    else {
+                        writeln(`\n${colors.bold}MCP Servers:${colors.reset}`);
+                        for (const [name, client] of mcpState.clients) {
+                            writeln(`  ${colors.green}✓${colors.reset} ${name} — ${client.tools.length} tools`);
+                        }
+                        for (const f of mcpState.failures) {
+                            writeln(`  ${colors.red}✗${colors.reset} ${f}`);
+                        }
+                        writeln(`  Total MCP tools: ${mcpState.tools.length}`);
+                    }
+                    writeln(``);
+                    break;
+                }
                 case "skills":
                     if (skills.length === 0) {
                         writeln(`${colors.yellow}No skills loaded.${colors.reset}`);
@@ -656,7 +701,7 @@ async function main() {
                             catch {
                                 writeln(`${colors.yellow}Model ${sessionData.modelId} not available, using current${colors.reset}`);
                             }
-                            agent = createAgent(currentModel, systemPrompt, thinkingLevel);
+                            agent = createAgent(currentModel, systemPrompt, thinkingLevel, workspaceRoot, rl, mcpState.tools);
                             agent.state.messages = sessionData.messages;
                             sessionId = sessionData.id;
                             writeln(`${colors.green}✓${colors.reset} Loaded session ${sessionId} (${sessionData.messages.length} messages)`);
@@ -831,16 +876,17 @@ function estimateTokens(text) {
 function estimateMessageTokens(msg) {
     return estimateTokens(JSON.stringify(msg));
 }
-function createAgent(model, systemPrompt, thinkingLevel = "low", workspaceRoot, rl) {
+function createAgent(model, systemPrompt, thinkingLevel = "low", workspaceRoot, rl, mcpTools = []) {
     const MODEL_MAX_TOKENS = model.maxTokens || 128000;
     const COMPACT_THRESHOLD = Math.floor(MODEL_MAX_TOKENS * 0.6); // compact at 60%
     const KEEP_RECENT = 10;
+    const allTools = [...builtinTools, ...mcpTools];
     return new Agent({
         initialState: {
             systemPrompt,
             model,
             thinkingLevel,
-            tools: builtinTools,
+            tools: allTools,
             workspaceRoot,
         },
         beforeToolCall: !workspaceRoot ? undefined : async (params) => {

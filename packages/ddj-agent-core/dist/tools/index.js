@@ -7,6 +7,7 @@ import { editTool } from "./edit.js";
 import { bashTool } from "./bash.js";
 import { globTool } from "./glob.js";
 import { grepTool } from "./grep.js";
+import { webfetchTool } from "./webfetch.js";
 export const builtinTools = [
     readTool,
     writeTool,
@@ -14,6 +15,7 @@ export const builtinTools = [
     bashTool,
     globTool,
     grepTool,
+    webfetchTool,
 ];
 export { readTool } from "./read.js";
 export { writeTool } from "./write.js";

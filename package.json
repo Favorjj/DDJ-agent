@@ -1,6 +1,6 @@
 {
   "name": "ddj-agent-monorepo",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "type": "module",
   "description": "Dream-Driven Journey — an AI coding agent CLI with multi-provider LLM support, streaming thinking, and extensible tools",
