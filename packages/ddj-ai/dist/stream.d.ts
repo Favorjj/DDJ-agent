@@ -1,5 +1,10 @@
 /**
- * Unified streaming API - dispatches to the right provider.
+ * Unified streaming API — dispatches to the right provider.
+ *
+ * Routes:
+ *   deepseek   → deepseek.ts   (first-class, full optimizations)
+ *   anthropic  → anthropic.ts  (Claude)
+ *   all others → openai-compatible.ts (OpenAI, Groq, Ollama, MiniMax, etc.)
  */
 import type { AssistantMessage, Context, Model, StreamEvent, ThinkingLevel } from "./types.js";
 export interface StreamOptions {

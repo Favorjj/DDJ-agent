@@ -1,30 +1,28 @@
 /**
- * OpenAI-compatible API provider.
- * Works for OpenAI, Groq, Ollama, MiniMax, Google, Cerebras, etc.
+ * DeepSeek API provider — first-class citizen with full optimizations.
  *
- * Note: DeepSeek has been split into its own provider (deepseek.ts).
+ * DeepSeek-specific features:
+ * - reasoning_content in delta/message for thinking visibility
+ * - reasoning_effort: low/medium/high/max (mapped from ThinkingLevel)
+ * - thinking.type: "enabled" for all non-off levels
+ * - reasoning_content MUST be preserved in assistant messages for tool-call turns
+ * - 1M context window (1000000 tokens)
+ * - max_completion_tokens auto-set when thinking is enabled
  */
+const DEEPSEEK_BASE_URL = "https://api.deepseek.com";
 /* ============================================================
- * Request body builder
+ * Thinking level mapping
  * ============================================================ */
-function buildRequestBody(model, messages, context, stream = true) {
-    const tools = context.tools?.map((t) => ({
-        type: "function",
-        function: {
-            name: t.name,
-            description: t.description,
-            parameters: t.parameters,
-        },
-    }));
-    return {
-        model: model.id,
-        messages,
-        ...(stream ? { stream: true } : {}),
-        ...(tools && tools.length > 0 ? { tools } : {}),
-    };
+/** DeepSeek only supports "high" and "max". low/medium → high, xhigh → max */
+function reasoningEffort(level) {
+    if (level === "xhigh")
+        return "max";
+    if (level === "off")
+        return "high";
+    return "high";
 }
 /* ============================================================
- * Message converter
+ * Message converter (DeepSeek-specific)
  * ============================================================ */
 function convertMessages(context) {
     const result = [];
@@ -36,7 +34,11 @@ function convertMessages(context) {
             const textContent = m.content
                 .map((c) => (c.type === "text" ? c.text : ""))
                 .join("");
-            result.push({ role: "tool", tool_call_id: m.toolCallId, content: textContent });
+            result.push({
+                role: "tool",
+                tool_call_id: m.toolCallId,
+                content: textContent,
+            });
             continue;
         }
         const base = { role: m.role };
@@ -49,7 +51,11 @@ function convertMessages(context) {
                 .map((c) => c.text)
                 .join("");
         }
+        // Assistant message: preserve reasoning_content (required for multi-turn tool calls)
         if (m.role === "assistant") {
+            if (m.reasoning_content) {
+                base.reasoning_content = m.reasoning_content;
+            }
             const tcs = m.content.filter((c) => c.type === "toolCall");
             if (tcs.length > 0) {
                 base.tool_calls = tcs.map((tc) => ({
@@ -67,34 +73,56 @@ function convertMessages(context) {
     return result;
 }
 /* ============================================================
+ * Request body builder (DeepSeek-specific)
+ * ============================================================ */
+function buildBody(model, messages, context, thinkingLevel, stream = true) {
+    const tools = context.tools?.map((t) => ({
+        type: "function",
+        function: {
+            name: t.name,
+            description: t.description,
+            parameters: t.parameters,
+        },
+    }));
+    const body = {
+        model: model.id,
+        messages,
+        max_tokens: 8192,
+        ...(stream ? { stream: true, stream_options: { include_usage: true } } : {}),
+        ...(tools && tools.length > 0 ? { tools } : {}),
+    };
+    // DeepSeek thinking mode
+    if (thinkingLevel && thinkingLevel !== "off") {
+        body.reasoning_effort = reasoningEffort(thinkingLevel);
+        body.thinking = { type: "enabled" };
+        body.max_tokens = 32768; // higher for thinking-heavy tasks
+    }
+    return body;
+}
+/* ============================================================
  * Streaming
  * ============================================================ */
-export async function* streamOpenAI(model, context, config) {
-    const baseUrl = config.baseUrl || "https://api.openai.com/v1";
-    const apiKey = config.apiKey || process.env["OPENAI_API_KEY"];
+export async function* streamDeepSeek(model, context, config) {
+    const apiKey = config.apiKey || process.env["DEEPSEEK_API_KEY"];
     if (!apiKey)
-        throw new Error("No API key provided");
+        throw new Error("DEEPSEEK_API_KEY is not set");
     const messages = convertMessages(context);
-    const body = buildRequestBody(model, messages, context, true);
-    const headers = {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-    };
-    if (model.provider === "cerebras") {
-        headers["cerebras-version"] = "2024-12-01";
-    }
+    const body = buildBody(model, messages, context, config.thinkingLevel, true);
     const signal = config.signal
         ? AbortSignal.any([config.signal, AbortSignal.timeout(300_000)])
         : AbortSignal.timeout(300_000);
-    const response = await fetch(`${baseUrl}/chat/completions`, {
+    const response = await fetch(`${DEEPSEEK_BASE_URL}/chat/completions`, {
         method: "POST",
-        headers,
+        headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${apiKey}`,
+        },
         body: JSON.stringify(body),
         signal,
     });
     if (!response.ok) {
         const text = await response.text();
-        throw new Error(`API error ${response.status}: ${text}`);
+        throw new Error(`DeepSeek API error ${response.status}: ${text}`);
     }
     if (!response.body)
         throw new Error("No response body");
@@ -105,9 +133,11 @@ export async function* streamOpenAI(model, context, config) {
         role: "assistant",
         content: [],
         stopReason: "unknown",
+        reasoning_content: "",
     };
     const toolCallAccum = {};
     let hasStarted = false;
+    let isThinking = false;
     while (true) {
         const { done, value } = await reader.read();
         if (done)
@@ -121,6 +151,9 @@ export async function* streamOpenAI(model, context, config) {
                 continue;
             const data = trimmed.slice(6).trim();
             if (data === "[DONE]") {
+                if (isThinking) {
+                    yield { type: "thinking_end", partial: { ...partial } };
+                }
                 yield { type: "done", reason: partial.stopReason, message: partial };
                 return partial;
             }
@@ -135,9 +168,28 @@ export async function* streamOpenAI(model, context, config) {
             if (!choice)
                 continue;
             const delta = choice.delta;
-            if (!hasStarted && (delta?.content !== undefined || delta?.tool_calls || choice.finish_reason)) {
+            if (!hasStarted && (delta?.content !== undefined || delta?.reasoning_content || delta?.tool_calls || choice.finish_reason)) {
                 hasStarted = true;
                 yield { type: "start", partial };
+            }
+            // reasoning_content delta — DeepSeek sends reasoning BEFORE text content
+            if (delta?.reasoning_content) {
+                if (!isThinking) {
+                    isThinking = true;
+                    yield { type: "thinking_start", partial: { ...partial } };
+                }
+                partial.reasoning_content = (partial.reasoning_content || "") + delta.reasoning_content;
+                yield {
+                    type: "thinking_delta",
+                    delta: delta.reasoning_content,
+                    partial: { ...partial },
+                };
+                continue;
+            }
+            // End thinking when text or tool calls arrive
+            if (isThinking && (delta?.content !== undefined || delta?.tool_calls)) {
+                isThinking = false;
+                yield { type: "thinking_end", partial: { ...partial } };
             }
             // Text content
             if (delta?.content !== undefined && delta.content !== null) {
@@ -192,20 +244,22 @@ export async function* streamOpenAI(model, context, config) {
             }
         }
     }
+    if (isThinking) {
+        yield { type: "thinking_end", partial: { ...partial } };
+    }
     yield { type: "done", reason: partial.stopReason, message: partial };
     return partial;
 }
 /* ============================================================
  * Non-streaming
  * ============================================================ */
-export async function completeOpenAI(model, context, config) {
-    const baseUrl = config.baseUrl || "https://api.openai.com/v1";
-    const apiKey = config.apiKey || process.env["OPENAI_API_KEY"];
+export async function completeDeepSeek(model, context, config) {
+    const apiKey = config.apiKey || process.env["DEEPSEEK_API_KEY"];
     if (!apiKey)
-        throw new Error("No API key provided");
+        throw new Error("DEEPSEEK_API_KEY is not set");
     const messages = convertMessages(context);
-    const body = buildRequestBody(model, messages, context, false);
-    const response = await fetch(`${baseUrl}/chat/completions`, {
+    const body = buildBody(model, messages, context, config.thinkingLevel, false);
+    const response = await fetch(`${DEEPSEEK_BASE_URL}/chat/completions`, {
         method: "POST",
         headers: {
             "Content-Type": "application/json",
@@ -219,7 +273,7 @@ export async function completeOpenAI(model, context, config) {
     });
     if (!response.ok) {
         const text = await response.text();
-        throw new Error(`API error ${response.status}: ${text}`);
+        throw new Error(`DeepSeek API error ${response.status}: ${text}`);
     }
     const data = await response.json();
     const choice = data.choices[0]?.message;
@@ -248,6 +302,7 @@ export async function completeOpenAI(model, context, config) {
         role: "assistant",
         content,
         stopReason: mapFinishReason(data.choices[0]?.finish_reason || "stop"),
+        reasoning_content: choice.reasoning_content || undefined,
         usage: data.usage
             ? {
                 input: data.usage.prompt_tokens,
@@ -265,4 +320,4 @@ function mapFinishReason(reason) {
         default: return "unknown";
     }
 }
-//# sourceMappingURL=openai-compatible.js.map
+//# sourceMappingURL=deepseek.js.map

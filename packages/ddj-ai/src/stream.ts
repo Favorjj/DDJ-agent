@@ -1,5 +1,10 @@
 /**
- * Unified streaming API - dispatches to the right provider.
+ * Unified streaming API — dispatches to the right provider.
+ *
+ * Routes:
+ *   deepseek   → deepseek.ts   (first-class, full optimizations)
+ *   anthropic  → anthropic.ts  (Claude)
+ *   all others → openai-compatible.ts (OpenAI, Groq, Ollama, MiniMax, etc.)
  */
 
 import type {
@@ -22,6 +27,17 @@ export async function* stream(
   context: Context,
   options: StreamOptions = {}
 ): AsyncGenerator<StreamEvent, AssistantMessage, undefined> {
+  // DeepSeek — first-class provider
+  if (model.provider === "deepseek") {
+    const { streamDeepSeek } = await import("./providers/deepseek.js");
+    return yield* streamDeepSeek(model, context, {
+      apiKey: options.apiKey || getProviderApiKey(model.provider),
+      signal: options.signal,
+      thinkingLevel: options.thinkingLevel,
+    });
+  }
+
+  // Anthropic — Claude
   if (model.provider === "anthropic") {
     const { streamAnthropic } = await import("./providers/anthropic.js");
     return yield* streamAnthropic(model, context, {
@@ -31,7 +47,7 @@ export async function* stream(
     });
   }
 
-  // OpenAI-compatible for all other providers (DeepSeek, MiniMax, Groq, etc.)
+  // OpenAI-compatible for all other providers
   const { streamOpenAI } = await import("./providers/openai-compatible.js");
   return yield* streamOpenAI(model, context, {
     apiKey: options.apiKey || getProviderApiKey(model.provider),
@@ -46,6 +62,15 @@ export async function complete(
   context: Context,
   options: StreamOptions = {}
 ): Promise<AssistantMessage> {
+  if (model.provider === "deepseek") {
+    const { completeDeepSeek } = await import("./providers/deepseek.js");
+    return completeDeepSeek(model, context, {
+      apiKey: options.apiKey || getProviderApiKey(model.provider),
+      signal: options.signal,
+      thinkingLevel: options.thinkingLevel,
+    });
+  }
+
   if (model.provider === "anthropic") {
     const { completeAnthropic } = await import("./providers/anthropic.js");
     return completeAnthropic(model, context, {
@@ -55,7 +80,6 @@ export async function complete(
     });
   }
 
-  // OpenAI-compatible for all other providers
   const { completeOpenAI } = await import("./providers/openai-compatible.js");
   return completeOpenAI(model, context, {
     apiKey: options.apiKey || getProviderApiKey(model.provider),

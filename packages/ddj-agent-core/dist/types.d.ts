@@ -104,6 +104,8 @@ export interface AgentState {
     cumulativeUsage?: import("@ddj-ai/core").TokenUsage;
     /** Workspace root directory for permission checks */
     workspaceRoot?: string;
+    /** Project structure map from /scan command */
+    projectMap?: string;
 }
 export interface BeforeToolCallHookParams {
     toolCall: {
@@ -152,6 +154,8 @@ export interface AgentConfig {
         tools?: AgentTool[];
         messages?: AgentMessage[];
         workspaceRoot?: string;
+        /** Project map injected after /scan — gives model full codebase overview */
+        projectMap?: string;
     };
     /** Required: convert AgentMessage[] to LLM-compatible Message[] */
     convertToLlm(messages: AgentMessage[]): Message[] | Promise<Message[]>;

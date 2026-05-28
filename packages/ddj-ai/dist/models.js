@@ -68,7 +68,7 @@ export const PROVIDERS = {
                 supportsTools: true,
                 supportsStreaming: true,
                 supportsThinking: true,
-                maxTokens: 384000,
+                maxTokens: 1000000,
             },
             {
                 modelId: "deepseek-v4-flash",
@@ -76,7 +76,7 @@ export const PROVIDERS = {
                 supportsTools: true,
                 supportsStreaming: true,
                 supportsThinking: true,
-                maxTokens: 384000,
+                maxTokens: 1000000,
             },
             {
                 modelId: "deepseek-chat",

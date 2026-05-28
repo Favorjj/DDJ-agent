@@ -399,6 +399,19 @@ function displayEvent(event) {
             }
             break;
         }
+        case "error": {
+            stopSpinner();
+            inThinkingBlock = false;
+            bashOutputSize = 0;
+            const msg = String(event.error);
+            if (msg.includes("aborted") || msg.includes("timeout")) {
+                writeln(`\n${colors.yellow}  ⚠ Request timed out. Try a simpler prompt or fewer tools.${colors.reset}`);
+            }
+            else {
+                writeln(`\n${colors.red}  ✗ Error: ${msg.slice(0, 200)}${colors.reset}`);
+            }
+            break;
+        }
         case "turn_end": {
             if (event.cumulativeUsage) {
                 const u = event.cumulativeUsage;
@@ -439,7 +452,55 @@ async function main() {
         }
     }
     // Build system prompt (with MCP tool info)
-    const systemPrompt = buildSystemPrompt(skills, workspaceRoot, mcpState.tools);
+    let systemPrompt = buildSystemPrompt(skills, workspaceRoot, mcpState.tools);
+    // Auto-scan project structure on startup
+    let projectMap = ""; // from /scan
+    const allFiles = [];
+    function walkSync(dir) {
+        let entries;
+        try {
+            entries = fs.readdirSync(dir, { withFileTypes: true });
+        }
+        catch {
+            return;
+        }
+        for (const e of entries) {
+            if (e.name.startsWith(".") || e.name === "node_modules" || e.name === "dist" || e.name === ".git")
+                continue;
+            const full = path.join(dir, e.name);
+            if (e.isDirectory()) {
+                walkSync(full);
+            }
+            else if (/\.(ts|js|json|md|html|css|py|rs|go|java|cpp|c|yaml|yml|toml|env)$/.test(e.name)) {
+                allFiles.push(full);
+            }
+        }
+    }
+    walkSync(workspaceRoot);
+    if (allFiles.length > 0) {
+        const relFiles = allFiles.map(f => path.relative(workspaceRoot, f).replace(/\\/g, "/"));
+        const allDirs = new Set(relFiles.map(f => f.split("/").slice(0, -1).join("/")).filter(Boolean));
+        const pkgPath = path.join(workspaceRoot, "package.json");
+        const pkgJson = (fs.existsSync(pkgPath) ? JSON.parse(fs.readFileSync(pkgPath, "utf-8")) : null);
+        const projectName = pkgJson?.name || path.basename(workspaceRoot);
+        projectMap = `Project: ${projectName}`;
+        if (pkgJson?.version)
+            projectMap += ` v${pkgJson.version}`;
+        if (pkgJson?.description)
+            projectMap += ` — ${pkgJson.description}`;
+        projectMap += `\nRoot: ${workspaceRoot}`;
+        const exts = new Map();
+        for (const f of relFiles) {
+            const ext = f.split(".").pop() || "?";
+            exts.set(ext, (exts.get(ext) || 0) + 1);
+        }
+        const extInfo = [...exts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8).map(([ext, n]) => `.${ext}:${n}`).join(" ");
+        projectMap += `\nFiles: ${allFiles.length} (${extInfo}) in ${allDirs.size} dirs`;
+        if (pkgJson?.dependencies) {
+            projectMap += `\nDeps: ${Object.keys(pkgJson.dependencies).slice(0, 8).join(", ")}`;
+        }
+        systemPrompt = systemPrompt.replace("RULES:", `## Project Map\n${projectMap}\n\nRULES:`);
+    }
     // Initial model selection
     let currentModel;
     const savedProvider = config.defaultProvider || "deepseek";
@@ -488,6 +549,32 @@ async function main() {
     let sessionId = `session_${Date.now()}`;
     let autoSave = true;
     let thinkingLevel = "low";
+    let autoThink = true; // smart thinking scheduling
+    // Smart thinking: analyze prompt and return best thinking level
+    function analyzePromptComplexity(input) {
+        const len = input.length;
+        const hasChinese = /[一-鿿]/.test(input);
+        // Keywords that signal high complexity
+        const xhighKw = [/重构/, /架构/, /设计模式/, /深度分析/, /review/i, /安全漏洞/];
+        const highKw = [/优化/, /改进/, /修复|bug|fix/i, /复杂/, /性能/, /并发/, /异步/];
+        const mediumKw = [/多个文件/, /新建.*项目/, /创建.*应用/, /测试用例/, /部署/];
+        for (const re of xhighKw)
+            if (re.test(input))
+                return "xhigh";
+        for (const re of highKw)
+            if (re.test(input))
+                return "high";
+        for (const re of mediumKw)
+            if (re.test(input))
+                return "medium";
+        // Long prompts (>200 chars) usually need more thinking
+        if (len > 200)
+            return "low";
+        // Greetings and simple questions don't need thinking
+        if (len < 15 && !/写|创建|生成|改|修|编|代码|文件|帮我/.test(input))
+            return "off";
+        return "low";
+    }
     // Welcome
     const c = colors;
     writeln(``);
@@ -498,11 +585,11 @@ async function main() {
     writeln(`${c.bold}${c.cyan}       ██████╔╝██████╔╝ ╚████╔╝${c.reset}`);
     writeln(`${c.bold}${c.cyan}       ╚═════╝ ╚═════╝   ╚═══╝ ${c.reset}`);
     writeln(``);
-    writeln(`       ${c.bold}${c.magenta}Dream-Driven Journey${c.reset}  ${c.dim}v1.1.0${c.reset}`);
+    writeln(`       ${c.bold}${c.magenta}Dream-Driven Journey${c.reset}  ${c.dim}v1.2.0${c.reset}`);
     writeln(`       ${c.dim}──────────────────────────────${c.reset}`);
     writeln(``);
     writeln(`  ${c.dim}▸${c.reset} Model    ${c.green}${currentModel.label || currentModel.id}${c.reset}`);
-    writeln(`  ${c.dim}▸${c.reset} Think    ${c.yellow}${thinkingLevel}${c.reset}`);
+    writeln(`  ${c.dim}▸${c.reset} Think    ${c.yellow}${autoThink ? "auto" : thinkingLevel}${c.reset}`);
     writeln(`  ${c.dim}▸${c.reset} Workspace ${c.cyan}${workspaceRoot}${c.reset}`);
     writeln(`  ${c.dim}▸${c.reset} Skills   ${skills.length > 0 ? skills.map((s) => s.name).join(", ") : c.dim + "none" + c.reset}`);
     writeln(`  ${c.dim}▸${c.reset} Help     ${c.yellow}/help${c.reset}`);
@@ -519,7 +606,9 @@ async function main() {
     let agent = createAgent(currentModel, systemPrompt, thinkingLevel, workspaceRoot, rl, mcpState.tools);
     // Helper to submit a prompt
     async function submitPrompt(input) {
-        agent = createAgent(currentModel, systemPrompt, thinkingLevel, workspaceRoot, rl, mcpState.tools);
+        // Smart thinking: auto-select level based on prompt complexity
+        const effectiveLevel = autoThink ? analyzePromptComplexity(input) : thinkingLevel;
+        agent = createAgent(currentModel, systemPrompt, effectiveLevel, workspaceRoot, rl, mcpState.tools);
         const unsubscribe = agent.subscribe((event) => {
             displayEvent(event);
         });
@@ -570,6 +659,64 @@ async function main() {
                     }
                     break;
                 }
+                case "scan": {
+                    writeln(`${colors.yellow}  ⠋ Rescanning project…${colors.reset}`);
+                    try {
+                        // Re-run the scan
+                        const files = [];
+                        function reWalk(dir) {
+                            let entries;
+                            try {
+                                entries = fs.readdirSync(dir, { withFileTypes: true });
+                            }
+                            catch {
+                                return;
+                            }
+                            for (const e of entries) {
+                                if (e.name.startsWith(".") || e.name === "node_modules" || e.name === "dist" || e.name === ".git")
+                                    continue;
+                                const full = path.join(dir, e.name);
+                                if (e.isDirectory()) {
+                                    reWalk(full);
+                                }
+                                else if (/\.(ts|js|json|md|html|css|py|rs|go|java|cpp|c|yaml|yml|toml|env)$/.test(e.name)) {
+                                    files.push(full);
+                                }
+                            }
+                        }
+                        reWalk(workspaceRoot);
+                        if (files.length > 0) {
+                            const relFiles = files.map(f => path.relative(workspaceRoot, f).replace(/\\/g, "/"));
+                            const allDirs = new Set(relFiles.map(f => f.split("/").slice(0, -1).join("/")).filter(Boolean));
+                            const extInfo = [...new Map(relFiles.map(f => [f.split(".").pop() || "?"]).reduce((m, e) => m.set(e[0], (m.get(e[0]) || 0) + 1), new Map())).entries()].sort((a, b) => b[1] - a[1]).slice(0, 8).map(([ext, n]) => `.${ext}:${n}`).join(" ");
+                            systemPrompt = buildSystemPrompt(skills, workspaceRoot, mcpState.tools);
+                            systemPrompt = systemPrompt.replace("RULES:", `## Project Map\n${projectMap}\n\nRULES:`);
+                            agent.state.systemPrompt = systemPrompt;
+                            writeln(`${colors.green}✓${colors.reset} Rescanned: ${files.length} files, ${allDirs.size} dirs`);
+                        }
+                        else {
+                            writeln(`${colors.yellow}  No files found${colors.reset}`);
+                        }
+                    }
+                    catch (e) {
+                        writeln(`${colors.red}✗ Scan failed: ${e.message}${colors.reset}`);
+                    }
+                    writeln("");
+                    break;
+                }
+                case "auto-think":
+                case "autothink": {
+                    if (args[0] === "off") {
+                        autoThink = false;
+                        writeln(`${colors.green}✓${colors.reset} Auto-think disabled. Manual: ${thinkingLevel}`);
+                    }
+                    else {
+                        autoThink = true;
+                        writeln(`${colors.green}✓${colors.reset} Auto-think enabled. Current: ${analyzePromptComplexity("test") === "off" ? "auto" : thinkingLevel}`);
+                    }
+                    writeln("");
+                    break;
+                }
                 case "key":
                 case "apikey": {
                     if (args.length < 2) {
@@ -616,7 +763,9 @@ async function main() {
                     writeln(`  ${colors.yellow}/list${colors.reset}          List saved sessions`);
                     writeln(`  ${colors.yellow}/clear${colors.reset}         Clear the terminal`);
                     writeln(`  ${colors.yellow}/compact${colors.reset}       Compact conversation context`);
-                    writeln(`  ${colors.yellow}/think${colors.reset}         Toggle thinking mode (off/minimal/low/medium/high)`);
+                    writeln(`  ${colors.yellow}/think${colors.reset}         Toggle thinking mode (off/minimal/low/medium/high/xhigh)`);
+                    writeln(`  ${colors.yellow}/auto-think${colors.reset}    Smart auto-select thinking level`);
+                    writeln(`  ${colors.yellow}/scan${colors.reset}          Scan project structure into context`);
                     writeln(`  ${colors.yellow}/key <provider> <key>${colors.reset}  Set API key for a provider (saved to config)`);
                     writeln(`  ${colors.yellow}/help${colors.reset}          Show this help`);
                     writeln(`  ${colors.yellow}/quit${colors.reset}          Exit the agent`);
@@ -647,7 +796,7 @@ async function main() {
                     writeln(`  ID: ${colors.cyan}${sessionId}${colors.reset}`);
                     writeln(`  Model: ${colors.green}${currentModel.label || currentModel.id}${colors.reset}`);
                     writeln(`  Messages: ${agent.state.messages.length}`);
-                    writeln(`  Thinking: ${thinkingLevel}`);
+                    writeln(`  Thinking: ${autoThink ? "auto" : thinkingLevel}`);
                     writeln(`  Skills: ${skills.length > 0 ? skills.map((s) => s.name).join(", ") : "none"}`);
                     writeln(``);
                     break;

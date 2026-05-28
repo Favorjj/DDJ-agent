@@ -1,11 +1,8 @@
 /**
  * OpenAI-compatible API provider.
- * Works for OpenAI, DeepSeek, Groq, Ollama, MiniMax, etc.
+ * Works for OpenAI, Groq, Ollama, MiniMax, Google, Cerebras, etc.
  *
- * DeepSeek-specific thinking/reasoning support:
- * - Uses `reasoning_content` field in delta/message (not standard OpenAI)
- * - Requires `extra_body.thinking = { type: "enabled" }` + `reasoning_effort`
- * - reasoning_content must be included in assistant messages for tool-call turns
+ * Note: DeepSeek has been split into its own provider (deepseek.ts).
  */
 import type { AssistantMessage, Context, Model, StreamEvent, ThinkingLevel } from "../types.js";
 export interface ProviderConfig {

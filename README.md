@@ -9,132 +9,153 @@
        ╚═════╝ ╚═════╝   ╚═══╝
 ```
 
-A terminal-based AI coding agent with streaming thinking, multi-provider LLM support, and extensible tools. Built with TypeScript.
+**DeepSeek-first AI coding agent** — 专为 DeepSeek V4 深度优化的终端 AI 编程助手。1M 上下文、流式思考、MCP 协议、智能权限控制。
 
-## Features
+## 亮点
 
-- **Multi-provider support** — DeepSeek V4, Claude, GPT-4o, Gemini, Groq, Ollama, and more
-- **Streaming thinking** — see the model's reasoning process in real-time (DeepSeek/Claude)
-- **Extensible tools** — built-in: bash, read, write, edit; add your own
-- **Skill system** — load custom SKILL.md files for specialized behavior
-- **Session persistence** — save and resume conversations
-- **Cross-platform** — Windows, macOS, Linux
+- **DeepSeek 深度适配** — 独立 Provider，完整支持 reasoning_content、reasoning_effort (high/max)、1M 上下文
+- **流式思考可见** — 实时展示 DeepSeek 推理过程，不再是黑盒
+- **MCP 协议** — 兼容 Claude Code 生态，一键接入社区几百个工具
+- **Claude Code 风格动效** — 旋转动画、bash 流式输出、思考阶段边界
+- **智能权限控制** — 工作区隔离 + 15 条危险命令检测 + cd 绕过拦截
+- **自动上下文管理** — 项目扫描注入 + 智能压缩 + Token 实时追踪
+- **多 Provider 兼容** — 同时支持 OpenAI、Anthropic、Groq、Ollama 等
 
-## Quick Start
+## 快速开始
 
-### Prerequisites
+### 环境
 
 - Node.js >= 18
-- An API key from one of the supported providers
+- DeepSeek API Key（或其他 Provider Key）
 
-### Install
+### 安装
 
 ```bash
-# Clone the repo
-git clone https://github.com/YOUR_USERNAME/ddjs.git
-cd ddjs
-
-# Install & build
-npm install
-npm run build
-
-# Link globally (so 'ddj' works from anywhere)
+git clone https://github.com/Favorjj/DDJ-agent.git
+cd DDJ-agent
+npm install && npm run build
 npm link -w @ddj-ai/cli
 ```
 
-### Set API Key
+### 设置 API Key
 
 ```bash
-# Option 1: Environment variable
 export DEEPSEEK_API_KEY=sk-xxxxxxxx
-
-# Option 2: Use the built-in /key command inside the CLI
+# 或者进入 CLI 后
 /key deepseek sk-xxxxxxxx
 ```
 
-### Run
+### 启动
 
 ```bash
 ddj
 ```
 
-On first launch, you'll see the welcome screen where you can select a provider and model.
+启动后自动扫描当前项目结构注入上下文，模型一上来就了解代码全貌。
 
-## Usage
+## 使用
 
 ```
-┃ ddj ❯ What files are in this directory?
+┃ ddj ❯ 帮我优化一下 agent.ts 的错误处理
 
-  ╭─ Thinking…
-  <reasoning process visible here>
-  ╰─ (thinking done)
+  ╭─ Thinking…                    ← 思考过程实时可见
+  需要分析当前的错误处理机制...
+  ╰─ done
 
-  Here are the files in your current directory:
-  ...
+  ⠹ bash running… 12.3KB          ← 工具执行动画
 
-┃ ddj ❯
+  │ 优化完成，改动如下：            ← 结果
+  ╰─ done
+  ╺ turn: 4500↑ 1200↓ tokens | total: 5.7k
 ```
 
-### Commands
+### 命令列表
 
-| Command | Description |
-|---------|-------------|
-| `/model` | Select a different AI model |
-| `/think <level>` | Set thinking depth (off/minimal/low/medium/high) |
-| `/new` | Start a new session |
-| `/session` | Show current session info |
-| `/save` | Save current session |
-| `/load <id>` | Load a previous session |
-| `/list` | List saved sessions |
-| `/compact` | Compact conversation context |
-| `/skills` | List loaded skills |
-| `/key <provider> <key>` | Set API key for a provider |
-| `/help` | Show help |
-| `/quit` | Exit |
+| 命令 | 说明 |
+|------|------|
+| `/think <level>` | 思维深度：off/minimal/low/medium/high/xhigh |
+| `/auto-think` | 智能自动选档（默认开启） |
+| `/scan` | 扫描项目结构注入上下文 |
+| `/model` | 切换 AI 模型 |
+| `/mcp` | 查看 MCP Server 和工具 |
+| `/new` | 新会话 |
+| `/session` | 会话信息 |
+| `/save` / `/load` | 保存/加载会话 |
+| `/compact` | 压缩上下文 |
+| `/skills` | 已加载技能 |
+| `/key <p> <k>` | 设置 API Key |
+| `/help` | 帮助 |
+| `/quit` | 退出 |
 
-## Supported Providers
+## 支持的 Provider
 
-| Provider | Models |
-|----------|--------|
-| DeepSeek | V4 Pro, V4 Flash |
-| Anthropic | Claude Sonnet 4, Claude 3.5 Sonnet/Haiku |
-| OpenAI | GPT-4o, GPT-4o Mini, o4-mini |
-| Google | Gemini 2.0 Flash, Gemini 2.5 Flash |
-| Groq | Llama 3.3 70B, Mixtral 8x7B |
-| Ollama | Llama 3.2, Qwen 2.5 (local) |
-| MiniMax | MiniMax Text 01 |
+| Provider | 模型 | 适配深度 |
+|----------|------|---------|
+| **DeepSeek** | V4 Pro, V4 Flash | **头等公民** — 独立 Provider，思考/1M 上下文/MCP 全适配 |
+| Anthropic | Claude Sonnet 4, 3.5 Sonnet/Haiku | 完整支持（含 thinking） |
+| OpenAI | GPT-4o, GPT-4o Mini, o4-mini | OpenAI 兼容协议 |
+| Google | Gemini 2.0 Flash, 2.5 Flash | OpenAI 兼容协议 |
+| Groq | Llama 3.3 70B, Mixtral 8x7B | OpenAI 兼容协议 |
+| Ollama | Llama 3.2, Qwen 2.5 | 本地模型，OpenAI 兼容协议 |
+| MiniMax | MiniMax Text 01 | OpenAI 兼容协议 |
 
-## Custom Skills
+## MCP 工具生态
 
-Create markdown files in `~/.ddj/skills/<skill-name>/SKILL.md`:
+编辑 `~/.ddj/mcp.json`（标准 MCP 配置格式）：
 
-```markdown
-# My Skill
-
-You are an expert in Python. Always use type hints and docstrings.
+```json
+{
+  "mcpServers": {
+    "calculator": {
+      "command": "node",
+      "args": ["D:/DDJ-agent/scripts/calculator-mcp-server.cjs"]
+    },
+    "docx": {
+      "command": "node",
+      "args": ["D:/DDJ-agent/scripts/docx-mcp-server.cjs"]
+    }
+  }
+}
 ```
 
-Skills are automatically loaded and injected into the system prompt on startup.
+重启 `ddj`，`/mcp` 查看已连接工具。内置 7 个工具 + MCP 可无限扩展。
 
-## Project Structure
+## 内置工具
+
+| 工具 | 功能 |
+|------|------|
+| read | 读文件（支持行范围） |
+| write | 写文件（自动建目录） |
+| edit | 搜索替换编辑 |
+| bash | Shell 命令（流式输出 + 权限控制） |
+| glob | 文件模式匹配 |
+| grep | 正则搜索（ripgrep 加速，自动回退） |
+| webfetch | 网页抓取 |
+
+## 项目结构
 
 ```
 packages/
-├── ddj-ai/              # AI model abstraction layer
+├── ddj-ai/                 # AI 模型抽象层
 │   └── src/
-│       ├── types.ts     # Core types (Message, ContentBlock, etc.)
-│       ├── models.ts    # Provider/model registry
-│       ├── stream.ts    # Unified streaming dispatcher
+│       ├── types.ts        # 核心类型
+│       ├── models.ts       # Provider/模型注册
+│       ├── stream.ts       # 统一流式分发
 │       └── providers/
-│           ├── anthropic.ts
-│           └── openai-compatible.ts
-├── ddj-agent-core/      # Agent loop & tool execution
+│           ├── deepseek.ts  # DeepSeek 独立优化
+│           ├── anthropic.ts # Claude
+│           └── openai-compatible.ts # OpenAI/others
+├── ddj-agent-core/         # Agent 核心
 │   └── src/
-│       ├── agent.ts     # Main Agent class (ReAct loop)
+│       ├── agent.ts        # ReAct 循环
 │       ├── event-stream.ts
-│       └── tools/       # bash, read, write, edit
-└── ddj-agent-cli/       # Terminal UI
-    └── src/main.ts      # CLI entry point
+│       ├── mcp/            # MCP 客户端/桥接
+│       └── tools/          # 7 个内置工具
+├── ddj-agent-cli/          # 终端 UI
+│   └── src/main.ts
+└── scripts/                # MCP Server 示例
+    ├── calculator-mcp-server.cjs
+    └── docx-mcp-server.cjs
 ```
 
 ## License
